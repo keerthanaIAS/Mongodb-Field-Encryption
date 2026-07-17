@@ -1,0 +1,29 @@
+services:
+  mongodb:
+    image: mongo:8.0
+    container_name: mongodb-field-encryption
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    command: >
+      mongod
+      --bind_ip_all
+      --replSet rs0
+    volumes:
+      - mongo_data:/data/db
+
+  node-app:
+    build: .
+    container_name: node-csfle-app
+    depends_on:
+      - mongodb
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: tail -f /dev/null
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/?replicaSet=rs0
+      DATABASE: encryption_poc
+
+volumes:
+  mongo_data:
