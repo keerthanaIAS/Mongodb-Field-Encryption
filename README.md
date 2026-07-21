@@ -366,3 +366,305 @@ MONGO_DATABASE=encryption_poc
 # other all inside env:
 MONGODB_URI=mongodb://mongodb:27017/?replicaSet=rs0
 DATABASE=encryption_poc
+
+
+chmod +x docker-compose-up.sh
+./docker-compose-up.sh
+
+# The important distinction is:
+- DEK (Data Encryption Key) → *stored in MongoDB Atlas inside encryption.__keyVault, but its actual key material is encrypted/wrapped*.
+- Master Key / CMK (Customer Master Key) → with the Local KMS provider, *stored outside MongoDB*, for example in master-key.txt.
+- Atlas *does not store your plaintext master key*.
+- Your application uses *the master key to unwrap the DEK*, and the *DEK encrypts/decrypts your actual field data*. MongoDB describes this as envelope encryption.
+
+# Auto Encryption Flow:
+                   YOUR NODE.JS APPLICATION
+                            |
+                            |
+                  Local Master Key (CMK)
+                     master-key.txt
+                            |
+                            | wraps / unwraps
+                            v
+                  DEK (Data Encryption Key)
+                            |
+                            | stored encrypted
+                            v
+                 MongoDB Atlas Key Vault
+                 encryption.__keyVault
+                            |
+                            | DEK encrypts field
+                            v
+                 MongoDB Atlas Application DB
+                  csfle_poc.users
+                            |
+                            v
+                 { email: <encrypted> }
+
+# Now open Atlas: *After created the 1st master create-key and create dek 2nd, we see like this:
+Atlas
+  ↓
+Browse Collections
+  ↓
+encryption
+  ↓
+__keyVault
+
+## You should see a document similar conceptually to:
+{
+  _id: Binary(...),
+
+  keyAltNames: [
+    "my-data-key"
+  ],
+
+  keyMaterial: Binary(...),
+
+  creationDate: ISODate(...),
+
+  updateDate: ISODate(...),
+
+  status: 0,
+
+  masterKey: {
+    provider: "local"
+  }
+}
+
+### The important thing is:                                                                                  -->*important notes*
+_id
+   ↓
+DEK identifier
+
+keyMaterial
+   ↓
+Encrypted DEK material
+
+masterKey
+   ↓
+Metadata describing the CMK/KMS provider
+
+*The actual plaintext DEK is not sitting in Atlas as readable key material. The DEK is encrypted by the master key before it is stored in the Key Vault. MongoDB documents this explicitly: the Key Vault stores DEKs, and DEKs are encrypted using the CMK before storage.*
+
+| Component                   | Purpose                                          |
+| --------------------------- | ------------------------------------------------ |
+| `mongodb`                   | Node.js MongoDB driver                           |
+| `mongodb-client-encryption` | Encryption dependency/binding required for CSFLE |
+| `mongo_crypt_v1.dylib`      | Cryptographic encryption engine                  |
+| `master-key.txt`            | Your local Customer Master Key                   |
+| DEK                         | Encrypts your actual data fields                 |
+| `encryption.__keyVault`     | Stores the encrypted DEK                         |
+| Atlas `users` collection    | Stores your encrypted application data           |
+
+#### The relationship is:
+MASTER KEY
+master-key.txt
+       │
+       │ protects / wraps
+       ▼
+DEK
+Data Encryption Key
+       │
+       │ encrypts
+       ▼
+email
+"keerthana@example.com"
+
+##### the storage is:
+Your Mac
+│
+└── master-key.txt
+      │
+      │
+      │ used to decrypt/wrap DEK
+      │
+      ▼
+MongoDB Atlas
+│
+└── encryption.__keyVault
+      │
+      └── encrypted DEK
+              │
+              │ encrypts
+              ▼
+         csfle_poc.users
+              │
+              └── email: Binary(...)
+
+- The crypt_shared library is not your Master Key.
+- It is not your DEK.
+- It is not the Key Vault.
+- It is the engine that performs the encryption/decryption operations.
+
+# successful flow
+------------------
+__________________
+# Your exact successful flow
+
+When you ran:
+
+```bash
+node insert.js
+```
+
+this happened:
+
+### Step 1
+
+Your application started:
+
+```text
+insert.js
+```
+
+### Step 2
+
+The driver loaded:
+
+```text
+mongodb-client-encryption
+```
+
+### Step 3
+
+The driver loaded:
+
+```text
+mongo_crypt_v1.dylib
+```
+
+because you configured:
+
+```js
+cryptSharedLibPath
+```
+
+### Step 4
+
+Your application found the DEK:
+
+```text
+UJlU6I/ET76+rKm8k6FQmQ==
+```
+
+### Step 5
+
+The encryption engine used your key configuration.
+
+### Step 6
+
+Your application attempted to insert:
+
+```js
+{
+  name: "Keerthana",
+  email: "keerthana@example.com"
+}
+```
+
+### Step 7
+
+Before sending the document to Atlas:
+
+```text
+email:
+"keerthana@example.com"
+```
+
+was automatically encrypted.
+
+Conceptually:
+
+```text
+{
+  name: "Keerthana",
+
+  email: Binary(
+    encrypted data
+  )
+}
+```
+
+### Step 8
+
+Atlas received the encrypted value.
+
+### Step 9
+
+When your application executed:
+
+```js
+users.findOne(...)
+```
+
+the encrypted value came back from Atlas.
+
+### Step 10
+
+The driver + `crypt_shared` decrypted it.
+
+### Step 11
+
+Your Node.js application received:
+
+```js
+{
+  name: "Keerthana",
+  email: "keerthana@example.com"
+}
+```
+
+That's why you see:
+
+```text
+Decrypted result returned to application
+```
+
+---
+
+## The most important thing to remember
+
+You now have **three separate concepts**:
+
+```text
+                 CRYPTOGRAPHIC KEYS
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+        Master Key             DEK
+       (CMK / KEK)          Data Key
+             │                   │
+             │                   │
+             ▼                   ▼
+     Protects the DEK      Encrypts your data
+             │                   │
+             ▼                   ▼
+      master-key.txt       email field
+```
+
+And separately:
+
+```text
+              ENCRYPTION ENGINE
+                     │
+                     ▼
+              crypt_shared
+          mongo_crypt_v1.dylib
+                     │
+                     ▼
+       Performs encryption/decryption
+```
+
+So:
+
+> **Master Key and DEK are keys. `crypt_shared` is the software engine that performs the cryptographic operations using those keys.**
+
+*mongodb-client-encryption using this lib are we using the mongo_crypt_v1.dylib engine? say short*?               ---->*doubt*
+mongodb-client-encryption
+        ↓
+loads/uses
+mongo_crypt_v1.dylib (crypt_shared)
+        ↓
+performs CSFLE encryption/decryption
+
+---
