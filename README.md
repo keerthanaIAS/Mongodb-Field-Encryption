@@ -668,3 +668,511 @@ mongo_crypt_v1.dylib (crypt_shared)
 performs CSFLE encryption/decryption
 
 ---
+
+# Queryable Encryption
+        │
+        ├── Master Key
+        ├── Data Encryption Key
+        ├── Encrypted Fields Configuration
+        ├── crypt_shared
+        ├── Encrypt data
+        └── Query encrypted fields
+
+## The key difference is:
+CSFLE
+email → encrypted
+       ↓
+Cannot normally query encrypted value directly
+
+Queryable Encryption
+email → encrypted
+       ↓
+Can query using plaintext:
+{ email: "keerthana@example.com" }
+       ↓
+MongoDB performs encrypted query processing
+       ↓
+Returns matching document
+
+### Unlike your previous CSFLE POC:
+CSFLE
+    ↓
+DEK
+    ↓
+schemaMap
+    ↓
+Encrypt fields
+
+### QE uses:
+Queryable Encryption
+        ↓
+Data Encryption Key
+        ↓
+encryptedFields
+        ↓
+Queryable encrypted field
+        ↓
+Internal QE metadata collections
+
+#### we'll define:
+email
+as an equality-queryable encrypted field.
+
+##### Conceptually:
+Plaintext
+
+{
+  name: "Keerthana",
+  email: "keerthana@example.com"
+}
+        ↓
+Queryable Encryption
+{
+  name: "Keerthana",
+  email: <encrypted>
+}
+        ↓
+Atlas
+Encrypted data
++
+QE internal metadata
+
+##### Then you'll be able to run:
+users.findOne({
+  email: "keerthana@example.com"
+});
+- without manually encrypting the query yourself.
+The driver handles the encryption/query processing.
+
+# Queryable Encryption POC
+The POC flow will be:
+
+                Node.js Application
+                        │
+                        ▼
+               MongoDB Driver
+                        │
+                        ▼
+           mongodb-client-encryption
+                        │
+                        ▼
+                  crypt_shared
+                        │
+                        ▼
+               Queryable Encryption
+                        │
+          ┌─────────────┴─────────────┐
+          │                           │
+          ▼                           ▼
+       Encrypt                    Query
+          │                           │
+          └─────────────┬─────────────┘
+                        ▼
+                 MongoDB Atlas
+
+Learn:
+1. Master Key
+2. DEK
+3. Key Vault
+4. Encrypted Fields
+5. Queryable encrypted field
+6. Automatic encryption
+7. Automatic decryption
+8. Equality query
+9. Inspect encrypted data in Atlas
+10. Understand QE internal collections
+
+# The complete QE flow building:
+STEP 1
+Create separate folder
+        ↓
+queryable-encryption-poc
+
+STEP 2
+Install dependencies
+        ↓
+mongodb
+dotenv
+mongodb-client-encryption
+
+STEP 3
+Generate NEW Master Key
+        ↓
+master-key.txt
+
+STEP 4
+Configure Atlas URI
+        ↓
+.env
+
+STEP 5
+Copy crypt_shared
+        ↓
+lib/mongo_crypt_v1.dylib
+
+STEP 6
+Create NEW QE DEK
+        ↓
+encryption.__keyVault
+
+STEP 7
+Define encryptedFields
+        ↓
+email = equality queryable
+
+STEP 8
+Create encrypted collection
+        ↓
+csfle_qe_poc.users
+
+STEP 9
+Insert plaintext
+        ↓
+{ email: "keerthana@example.com" }
+
+STEP 10
+Driver automatically encrypts
+        ↓
+Atlas stores encrypted data
+
+STEP 11
+Query plaintext
+        ↓
+{ email: "keerthana@example.com" }
+
+STEP 12
+QE automatically handles query
+        ↓
+Matching document
+
+STEP 13
+Inspect Atlas
+        ↓
+Encrypted user data
++
+QE internal collections
++
+Key Vault
+
+## Remaining Steps:
+                    QUERYABLE ENCRYPTION POC
+                              │
+                              ▼
+                       Master Key
+                     (local file)
+                              │
+                              ▼
+                           DEK
+                              │
+                              ▼
+                    encryption.__keyVault
+                              │
+                              ▼
+                     encryptedFields
+                              │
+                              ▼
+                  Create QE encrypted collection
+                              │
+                              ▼
+                         Insert.js
+                              │
+                  plaintext email from app
+                              │
+                              ▼
+                     Driver encrypts it
+                              │
+                              ▼
+                         Atlas stores
+                 encrypted data + QE metadata
+                              │
+                              ▼
+                          query.js
+                              │
+                  plaintext email query
+                              │
+                              ▼
+                 Driver encrypts query
+                              │
+                              ▼
+                    Atlas finds matching data
+                              │
+                              ▼
+                   Driver decrypts result
+                              │
+                              ▼
+                       App sees plaintext
+
+### How is QE Stored in Atlas?
+This is the part you specifically wanted to understand.
+
+* Your CSFLE POC currently looks approximately like:
+Atlas
+│
+├── encryption
+│   └── __keyVault
+│       └── DEK
+│
+└── your_database
+    └── users
+        ├── _id
+        ├── name
+        └── email: <encrypted binary>
+
+With Queryable Encryption, you'll have additional QE-related metadata.
+
+* Conceptually:
+Atlas
+│
+├── encryption
+│   └── __keyVault
+│       └── QE DEK
+│
+└── queryable_encryption
+    │
+    ├── users
+    │   └── encrypted user documents
+    │
+    └── QE internal metadata collections
+        └── encrypted query support data
+
+*The major difference is*:
+CSFLE
+Application
+   │
+   │ insert plaintext
+   ▼
+Driver
+   │
+   │ encrypt
+   ▼
+Atlas
+   │
+   ▼
+Encrypted field
+
+*You cannot normally query the encrypted field directly*.
+
+Queryable Encryption
+Application
+   │
+   │ insert plaintext
+   ▼
+QE Driver
+   │
+   ├── encrypt data
+   ├── create query metadata
+   └── maintain queryability
+          │
+          ▼
+       Atlas
+
+Then:
+Application
+------------
+users.findOne({
+  email: "keerthana@example.com"
+})
+        ↓
+QE Driver
+
+Encrypts query
+        ↓
+Atlas
+
+Uses QE query metadata
+        ↓
+
+Finds encrypted document
+        ↓
+QE Driver
+
+Decrypts result
+        ↓
+Application
+
+{
+  email: "keerthana@example.com"
+}
+
+## Result of QE Decrypt:
+Decrypted result returned to application:
+{
+  _id: new ObjectId('6a5f192af805a847f24a989a'),
+  name: 'Keerthana',
+  email: 'keerthana@example.com',
+  __safeContent__: [               -->*This is Queryable Encryption metadata used by MongoDB to support queries against encrypted fields.*
+    Binary.createFromBase64('VC8gfOyBdwcofn2XciyjMZR7benPXD4m4ZtzVxkpWvI=', 0)
+  ]
+}
+
+## Result for QE range Decrypt:
+Decrypted results returned to application:
+[
+  {
+    _id: ObjectId {
+      buffer: Buffer(12) [Uint8Array] [
+        106,  95,  29, 159, 181,
+        170,  45, 241,   4,  25,
+         81, 123
+      ]
+    },
+    name: 'Keerthana',
+    email: 'keerthana@example.com',
+    salary: 75000,
+    __safeContent__: [
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          114,  12, 253, 171, 127, 222, 89, 214,
+          206,  99, 220, 172,  49, 167, 13, 254,
+           39,  14, 125,  29,  65,  90,  2, 156,
+          114, 156, 168, 160,  79, 143, 46,   4
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+           74, 171,  12, 251,  51,  71,  40, 119,
+           71,  70,  31, 101,  17,  34, 115,  51,
+           53, 195, 188, 103, 211, 102, 157, 180,
+          134, 224, 216, 135, 165, 207,  27, 200
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          234, 206,  71, 228, 171,  59, 125, 232,
+          169,  37,   2,  19,  19,  72, 150, 217,
+          251,  75,  31,  54, 129,  76, 184,  72,
+           28,  60, 219, 191, 159, 141, 139,  30
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          182, 100, 149,  71, 134, 250, 128,
+           76, 167,   2,  76, 186, 230, 255,
+          130,  57, 236, 116, 168,  58, 202,
+          102, 175, 185, 169, 165, 113, 163,
+           69, 208,  44,  23
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          189, 158, 211, 127, 152,  16,  27,
+          205, 185, 103, 202, 114, 158, 251,
+          119, 241, 245, 251,  47,   6, 175,
+           11, 232, 182, 197, 165, 235,  25,
+          169, 112, 201, 178
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+           88,  42, 164, 101,   5, 252,  10, 232,
+          176,  11,  40,  57, 134, 108, 253,  11,
+          121, 230, 252, 241, 134, 161,  75,  11,
+           93,  62,  33, 223,  80, 167, 186, 140
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          119,  98,  76, 235,  44,  65, 160, 141,
+          106, 254, 136, 122, 201,  18, 250,  20,
+          146, 206, 206,  86,   6, 244,  14, 209,
+           30,  10, 181, 159,   0, 117, 159,  81
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          156, 217, 165,  41, 161, 244, 206,  12,
+            1, 228,  43, 110,  81,  56,  25,  22,
+          164, 178,  14, 191, 232,  92, 253,  49,
+           96, 106, 186,  86,   6, 191,   7, 190
+        ],
+        sub_type: 0,
+        position: 32
+      },
+      Binary {
+        buffer: Buffer(32) [Uint8Array] [
+          183, 129, 160, 149, 171,  16, 173,
+          238,  84, 188,  36, 213,  90, 178,
+          252, 116, 199, 198, 241, 163,  88,
+          149,  98,  35, 254,  10, 255, 183,
+          192,  35, 101, 210
+        ],
+        sub_type: 0,
+        position: 32
+      }
+    ]
+  }
+]
+
+### This is the key thing you wanted to understand:
+              CSFLE                         Queryable Encryption
+──────────────────────────────    ──────────────────────────────
+Master Key                       Master Key
+     ↓                                 ↓
+DEK                              DEK
+     ↓                                 ↓
+Key Vault                        Key Vault
+     ↓                                 ↓
+Encrypt field                    Encrypt field
+     ↓                                 ↓
+Encrypted data                   Encrypted data
+                                   +
+                               __safeContent__
+                                   +
+                             ESC / ECOC metadata
+                                   ↓
+                           Query encrypted field
+
+#### QE learning flow:
+You now have two independent POCs:
+
+POC 1 — Equality
+users
+│
+└── email
+      │
+      ├── Encrypt
+      ├── Store encrypted
+      └── Query equality
+           ↓
+      email = "keerthana@example.com"
+
+Run:
+node create-collection.js
+node insert.js
+node query.js
+
+POC 2 — Range
+employees
+│
+├── email
+│     └── Equality query
+│
+└── salary
+      │
+      ├── Encrypt
+      ├── Store encrypted
+      └── Query range
+           ↓
+      salary >= 50000
+      salary < 100000
+
+Run:
+cd range-query
+node create-range-collection.js
+node insert-range.js
+node query-range.js
+
