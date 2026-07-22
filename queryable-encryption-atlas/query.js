@@ -28,6 +28,23 @@ async function main() {
       email: emailToSearch,
     });
 
+    const result1 = await collection.find({
+      email: { $eq: "keerthana@example.com" }
+    }).toArray();
+
+    console.log(result1, "res1");
+
+    const result2 = await collection.find({
+      email: {
+        $in: [
+          "keerthana@example.com",
+          "abc@gmail.com"
+        ]
+      }
+    }).toArray();
+
+    console.log(result2, "res2");
+
     console.log(
       "\nDecrypted result returned to application:"
     );

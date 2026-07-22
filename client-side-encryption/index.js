@@ -53,6 +53,26 @@ async function run() {
     console.log("Inserted encrypted data");
 
     const rawData = await collection.findOne({});
+
+    const encryptedSearchEmail = await clientEncryption.encrypt(
+        "keer@gmail.com",
+        {
+            keyId,
+            algorithm: "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic"
+        }
+    );
+
+    const result = await collection.find({
+        email: encryptedSearchEmail
+    }).toArray();
+
+    console.log("Equality Search", result);
+
+    const result2 = await collection.find({
+        name: { $regex: "keer", $options: "i" }
+    }).toArray();
+
+    console.log("Search by unencrypted fields", result2);
     console.log("Raw data in MongoDB:");
     console.log("  name:", rawData.name);
     console.log("  email:", typeof rawData.email === 'object' ? 'Encrypted Binary' : rawData.email);
