@@ -389,6 +389,79 @@ Simple:
 Think of it like:
 **Master Key 🔑 → unlocks DEK 🔐 → DEK encrypts/decrypts Data 📄**
 
+**Master Key 🔑 → unlocks DEK 🔐 → DEK encrypts/decrypts Data 📄** here unlock means?
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------
+Here, **"unlock" means the Master Key is used to decrypt (unwrap) the DEK**.
+
+Think of it like this:
+
+```text
+Master Key 🔑
+     │
+     │ unwrap / decrypt
+     ▼
+Encrypted DEK 🔐
+     │
+     ▼
+DEK 🔑
+     │
+     │ encrypt / decrypt
+     ▼
+Your Data 📄
+```
+
+### Simple real-world example
+
+Imagine:
+
+* **Master Key** = Big key 🔑
+* **DEK** = Small key 🔐
+* **Data** = Locked box 📦
+
+The small key (DEK) is itself kept inside a **locked container** in the Key Vault.
+
+```text
+Key Vault
+┌──────────────────────┐
+│ Encrypted DEK 🔐     │
+└──────────────────────┘
+          ▲
+          │ Master Key
+          │ unlocks/unwraps
+          ▼
+       DEK 🔑
+          │
+          ▼
+   Encrypts/Decrypts
+          │
+          ▼
+       Data 📄
+```
+
+So when we say:
+
+> **Master Key unlocks the DEK**
+
+we mean:
+
+> The Master Key **decrypts (unwraps) the encrypted DEK**, making the DEK available to the encryption system.
+
+### Important distinction
+
+The Master Key **does not unlock your actual data**.
+
+```text
+❌ Master Key → Data
+
+✅ Master Key → Encrypted DEK → DEK → Data
+```
+
+The **DEK** is the key that actually encrypts and decrypts your data. The **Master Key protects the DEK**.
+
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------
+
 The master key **does not directly encrypt your database data**. It protects the **DEK**.
 
 # Auto Encryption Flow:
@@ -1522,3 +1595,1036 @@ Also, **creating the Key Vault collection itself does not create a DEK**. The Ke
 In your POC, the flow is:
 
 **Master Key → Create DEK → Store DEK in `__keyVault` → Configure CSFLE/QE → Encrypt fields.**
+
+# is queryable encryption does not need dek creation?:
+------------->>>>>>>>>>>>>>>>>>>>>>>-----------------
+=====================================================
+No — **Queryable Encryption (QE) also needs a DEK**.
+
+The difference is mainly **how the encryption keys and encrypted fields are managed**.
+
+### Simple flow
+
+**CSFLE:**
+
+```text
+Master Key
+    ↓ protects
+DEK
+    ↓ encrypts
+Field Data
+```
+
+**Queryable Encryption:**
+
+```text
+Master Key
+    ↓ protects
+DEK
+    ↓ used by QE encryption system
+Encrypted Field + Queryable Encryption Metadata
+```
+
+In QE, you typically use MongoDB's **`ClientEncryption.createEncryptedCollection()`** helper. It can **automatically generate the DEK(s)** and create the encrypted collection metadata for you.
+
+So:
+
+> **QE needs DEKs, but you may not have to manually create them yourself.**
+
+That's probably why it looked like QE doesn't need DEK creation.
+
+### In your POC
+
+With **CSFLE**, you were explicitly doing something like:
+
+```javascript
+const dataKey = await clientEncryption.createDataKey(...)
+```
+
+With **QE**, you can do:
+
+```javascript
+await clientEncryption.createEncryptedCollection(...)
+```
+
+and MongoDB's QE setup handles the required DEK generation and encrypted-fields configuration.
+
+**Bottom line:**
+**CSFLE → DEK is often manually created.**
+**QE → DEK is still required, but the QE helper can create/manage it as part of encrypted collection creation.**
+
+
+# clientEncryption.createEncryptedCollection & const dataKey = await clientEncryption.createDataKey
+---------------------------------------------------------------------------------------------------
+if we use this in both we dont need to create manual?
+------------------------------------------------------
+Yes — **but you need to distinguish CSFLE and QE**.
+
+### CSFLE
+
+If you use:
+
+```javascript
+const dataKey = await clientEncryption.createDataKey("local", {
+  keyAltNames: ["my-data-key"]
+});
+```
+
+then you are **creating the DEK manually**.
+
+You need this because your CSFLE `schemaMap` typically references that DEK.
+
+```text
+Master Key
+    ↓
+createDataKey()
+    ↓
+DEK
+    ↓
+Key Vault
+    ↓
+CSFLE Schema Map
+    ↓
+Encrypted Collection
+```
+
+---
+
+### Queryable Encryption (QE)
+
+If you use:
+
+```javascript
+await clientEncryption.createEncryptedCollection(
+  db,
+  "users",
+  {
+    provider: "local",
+    createCollectionOptions: {
+      encryptedFields: encryptedFieldsMap
+    },
+    masterKey: {}
+  }
+);
+```
+
+then **you don't need to manually call `createDataKey()` first**.
+
+The `createEncryptedCollection()` helper handles the QE key creation/setup for you.
+
+```text
+Master Key
+    ↓
+createEncryptedCollection()
+    ↓
+QE creates required DEK/key material
+    ↓
+Key Vault
+    ↓
+QE Collection
+```
+
+### So the short answer:
+
+|           | `createDataKey()` manually      | `createEncryptedCollection()` |
+| --------- | ------------------------------- | ----------------------------- |
+| **CSFLE** | ✅ Usually required              | ❌ Not the normal CSFLE setup  |
+| **QE**    | ❌ Not necessary if using helper | ✅ Handles QE key setup        |
+
+**Your QE code should generally not have this extra step:**
+
+```javascript
+const dek = await encryption.createDataKey("local", {
+  keyAltNames: ["qe-data-key"]
+});
+```
+
+if you're immediately using `createEncryptedCollection()` with `masterKey: {}`.
+
+So for your POC, you can remove the **manual QE `createDataKey()` step** and let `createEncryptedCollection()` handle it.
+
+# here in qe is the date type based fields have to have unique dek like string age number field? is dek seperate if yes then u said previous order colleaction have one and user colleaction ahve one u said like this:
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------
+Yes — **this is where your previous mental model needs correction**.
+
+For **Queryable Encryption**, you should **not assume that every field or every BSON data type needs a separate DEK**.
+
+Let's make it precise.
+
+### Your example
+
+Suppose you have:
+
+```text
+users
+├── email     → string
+└── age       → int
+
+orders
+├── orderId   → string
+└── amount    → double
+```
+
+You might think:
+
+```text
+email  → DEK 1
+age    → DEK 2
+orderId → DEK 3
+amount → DEK 4
+```
+
+**No. That's not the correct rule.**
+
+The key question is **how the encrypted collection is configured**, not simply the field's data type.
+
+---
+
+### With QE's `createEncryptedCollection()`
+
+You define your encrypted fields:
+
+```javascript
+const encryptedFields = {
+  fields: [
+    {
+      path: "email",
+      bsonType: "string",
+      queries: [
+        { queryType: "equality" }
+      ]
+    },
+    {
+      path: "age",
+      bsonType: "int",
+      queries: [
+        { queryType: "range" }
+      ]
+    }
+  ]
+};
+```
+
+Then:
+
+```javascript
+await clientEncryption.createEncryptedCollection(
+  db,
+  "users",
+  {
+    provider: "local",
+    createCollectionOptions: {
+      encryptedFields
+    },
+    masterKey: {}
+  }
+);
+```
+
+The QE helper manages the required key material.
+
+So conceptually:
+
+```text
+Master Key
+     │
+     ▼
+QE key management
+     │
+     ▼
+Key Vault
+     │
+     ▼
+users collection
+   ├── email (string, equality)
+   └── age (int, range)
+```
+
+You don't need to think:
+
+> "String = one DEK, Int = another DEK."
+
+That's **not how you should model it**.
+
+---
+
+### What about `users` and `orders`?
+
+If you have:
+
+```text
+users collection
+   ├── email
+   └── age
+
+orders collection
+   ├── orderId
+   └── amount
+```
+
+each encrypted collection is configured independently:
+
+```text
+Master Key
+     │
+     ├───────────────┐
+     │               │
+     ▼               ▼
+users QE setup    orders QE setup
+     │               │
+     ▼               ▼
+Key Vault         Key Vault
+```
+
+The **same Key Vault collection** can store key material for multiple encrypted collections.
+
+So **don't think**:
+
+> "One collection = exactly one DEK."
+
+That's also too simplistic.
+
+The actual QE key structure can involve **multiple internal data keys/key material** depending on the encrypted fields and queryable encryption configuration.
+
+### The safe mental model
+
+```text
+Master Key
+     │
+     │ protects
+     ▼
+DEKs / QE key material
+     │
+     │ stored encrypted in
+     ▼
+One shared Key Vault collection
+     │
+     ├── users QE collection
+     │      ├── email
+     │      └── age
+     │
+     └── orders QE collection
+            ├── orderId
+            └── amount
+```
+
+### The key correction to what I told you earlier
+
+I previously simplified it as:
+
+> `users` → one DEK
+> `orders` → one DEK
+
+That was **too simplistic and potentially misleading**.
+
+The correct concept is:
+
+> **The Key Vault is shared, and QE manages the encryption key material needed by your encrypted collections. You should not infer the number of DEKs simply from the number of collections or BSON data types.**
+
+And **string vs number does not automatically mean separate DEKs**. The `bsonType` tells QE **what type of data is being encrypted and how the field's query capability is configured**; it does not by itself define "one DEK per data type."
+
+
+# how mongodb wokring with quryable how random working how here csfle and queryable supporting random say the difference:
+--------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------
+Yes. This is the **exact distinction you need to understand** between **CSFLE** and **Queryable Encryption (QE)**.
+
+The word **"random"** is causing the confusion because **both CSFLE and QE can use randomized encryption**, but **they do not provide the same query capabilities**.
+
+---
+
+# 1. First: What does randomized encryption mean?
+
+Suppose you have:
+
+```text
+email = "keerthana@gmail.com"
+```
+
+With **randomized encryption**, encrypting the same value multiple times can produce different ciphertexts:
+
+```text
+"keerthana@gmail.com"
+       │
+       ├── Encrypt → X7A91...
+       ├── Encrypt → P8B42...
+       └── Encrypt → Z3K19...
+```
+
+So:
+
+```text
+Same plaintext
+      ↓
+Different ciphertext
+```
+
+This is good for privacy because someone looking at your database cannot easily identify that the same encrypted value appears multiple times.
+
+---
+
+# 2. CSFLE randomized encryption
+
+In CSFLE, you can configure a field as:
+
+```text
+email
+  ↓
+Random Encryption
+```
+
+The data is encrypted randomly.
+
+For example:
+
+```text
+Document 1
+email → X7A91...
+
+Document 2
+email → P8B42...
+
+Document 3
+email → Z3K19...
+```
+
+Now suppose you run:
+
+```javascript
+db.users.find({
+  email: "keerthana@gmail.com"
+});
+```
+
+The problem is:
+
+```text
+Query value
+"keerthana@gmail.com"
+       ↓
+Random encryption
+       ↓
+Maybe ABC123...
+```
+
+But the database contains:
+
+```text
+X7A91...
+P8B42...
+Z3K19...
+```
+
+There is no single ciphertext that MongoDB can compare against.
+
+Therefore:
+
+> **CSFLE randomized encryption does not support querying the encrypted field.**
+
+You can encrypt and decrypt it, but you can't use normal equality queries on that randomized encrypted field.
+
+---
+
+# 3. CSFLE deterministic encryption
+
+CSFLE also supports **deterministic encryption**.
+
+Now:
+
+```text
+"keerthana@gmail.com"
+       ↓
+Deterministic encryption
+       ↓
+ABC123
+```
+
+Every time the same plaintext is encrypted:
+
+```text
+"keerthana@gmail.com" → ABC123
+"keerthana@gmail.com" → ABC123
+"keerthana@gmail.com" → ABC123
+```
+
+Now MongoDB can do:
+
+```text
+Query:
+"keerthana@gmail.com"
+       ↓
+Encrypt deterministically
+       ↓
+ABC123
+       ↓
+Search database
+       ↓
+ABC123 → Match
+```
+
+So:
+
+> **CSFLE deterministic encryption supports equality queries.**
+
+But the downside is:
+
+```text
+Same plaintext
+     ↓
+Same ciphertext
+```
+
+An attacker who can see the database can notice that multiple records have the same ciphertext.
+
+This reveals **equality patterns**.
+
+---
+
+# 4. Queryable Encryption
+
+Now we come to QE.
+
+QE uses **randomized encryption** for the actual encrypted data.
+
+So you might have:
+
+```text
+"keerthana@gmail.com"
+       ↓
+Randomized encryption
+       ↓
+X7A91...
+
+"keerthana@gmail.com"
+       ↓
+Randomized encryption
+       ↓
+P8B42...
+```
+
+The ciphertexts are different.
+
+But QE adds **special queryable encryption mechanisms** that allow supported queries.
+
+Conceptually:
+
+```text
+                QE
+                 │
+       ┌─────────┴─────────┐
+       │                   │
+       ▼                   ▼
+Randomized Encryption   Queryable Structure
+       │                   │
+       ▼                   ▼
+Protects Data          Enables Queries
+```
+
+When you query:
+
+```javascript
+db.users.find({
+  email: "keerthana@gmail.com"
+});
+```
+
+The MongoDB driver handles the query encryption process.
+
+Conceptually:
+
+```text
+Application
+    │
+    │ email = "keerthana@gmail.com"
+    ▼
+MongoDB Driver
+    │
+    ├── Encrypts query
+    ├── Generates query information
+    │
+    ▼
+MongoDB Server
+    │
+    ▼
+Searches encrypted query structure
+    │
+    ▼
+Returns encrypted document
+    │
+    ▼
+Driver decrypts
+    │
+    ▼
+Application gets plaintext
+```
+
+The MongoDB server doesn't need the plaintext email.
+
+---
+
+# 5. The biggest difference
+
+Here is the important comparison:
+
+| Feature                                            | CSFLE Deterministic | CSFLE Randomized | Queryable Encryption |
+| -------------------------------------------------- | ------------------- | ---------------- | -------------------- |
+| Encrypts data                                      | ✅                   | ✅                | ✅                    |
+| Same plaintext → same ciphertext                   | ✅                   | ❌                | ❌                    |
+| Equality queries                                   | ✅                   | ❌                | ✅                    |
+| Range queries                                      | ❌                   | ❌                | ✅*                   |
+| Better protection against equality-pattern leakage | ❌                   | ✅                | ✅                    |
+| Queryable encrypted fields                         | Limited             | ❌                | ✅                    |
+
+`*` QE supports range queries when the field is configured for the supported range query type and version/configuration requirements are met.
+
+---
+
+# 6. The easiest way to remember
+
+### CSFLE Randomized
+
+```text
+Data
+ ↓
+Random encryption
+ ↓
+Different ciphertext every time
+ ↓
+Strong privacy
+ ↓
+❌ Can't query normally
+```
+
+### CSFLE Deterministic
+
+```text
+Data
+ ↓
+Deterministic encryption
+ ↓
+Same plaintext = Same ciphertext
+ ↓
+✅ Equality query
+ ↓
+⚠️ Equality patterns can leak
+```
+
+### Queryable Encryption
+
+```text
+Data
+ ↓
+Randomized encryption
+ +
+Queryable encryption structures
+ ↓
+Different ciphertexts
+ +
+Query capability
+ ↓
+✅ Supported queries
+```
+
+---
+
+# 7. Your POC
+
+When you wrote:
+
+```javascript
+{
+  path: "email",
+  bsonType: "string",
+  queries: [
+    {
+      queryType: "equality"
+    }
+  ]
+}
+```
+
+you were telling QE:
+
+> "I want this field to remain encrypted, but I also want to support equality queries on it."
+
+QE then handles the cryptographic machinery needed to make that possible.
+
+So your final mental model should be:
+
+```text
+                    MongoDB Encryption
+                           │
+             ┌─────────────┴─────────────┐
+             │                           │
+           CSFLE                         QE
+             │                           │
+      ┌──────┴──────┐             Randomized encryption
+      │             │                      +
+ Deterministic   Randomized          Queryable structures
+      │             │                      │
+      ▼             ▼                      ▼
+ Equality        Encrypt only       Supported queries
+ queries         No query            Equality / Range*
+```
+
+### The one sentence you should remember:
+
+> **CSFLE randomized encryption gives you strong encryption but doesn't allow querying; CSFLE deterministic encryption allows equality queries by producing the same ciphertext for the same value; QE uses randomized encryption plus special queryable encryption mechanisms so you can query encrypted data without relying on deterministic ciphertext.**
+
+-----------------------------------------------------------------------------------------------------------------------------
+
+# Depth of QE:
+Yes. Let's understand **how MongoDB Queryable Encryption (QE) works internally**, especially **how random encryption still allows queries**.
+
+The confusing part is:
+
+> If the same value is encrypted randomly every time, how can MongoDB search for it?
+
+That's exactly what QE solves.
+
+---
+
+## 1. Normal encryption
+
+Suppose you have:
+
+```text
+email = "keerthana@gmail.com"
+```
+
+With normal encryption, you might get:
+
+```text
+keerthana@gmail.com
+        ↓
+    Encrypt
+        ↓
+X7A91B2C...
+```
+
+If you encrypt the same value again:
+
+```text
+keerthana@gmail.com
+        ↓
+    Encrypt
+        ↓
+P9K21XYZ...
+```
+
+Because of **randomized encryption**, the ciphertext is different.
+
+So MongoDB cannot simply do:
+
+```text
+Find ciphertext = X7A91B2C
+```
+
+because the same plaintext might have a different ciphertext.
+
+---
+
+# 2. What Queryable Encryption does
+
+QE adds a special **queryable encryption structure**.
+
+Think:
+
+```text
+User Application
+      │
+      │ Query:
+      │ email = "keerthana@gmail.com"
+      ▼
+MongoDB Driver
+      │
+      │ Encrypts query
+      ▼
+MongoDB Server
+      │
+      │ Searches encrypted queryable structure
+      ▼
+Encrypted Collection
+```
+
+The application/driver knows the encryption keys.
+
+The MongoDB server **does not get the plaintext email**.
+
+---
+
+# 3. What happens when you INSERT
+
+You insert:
+
+```javascript
+{
+  email: "keerthana@gmail.com",
+  age: 25
+}
+```
+
+The driver automatically encrypts the configured fields.
+
+Conceptually, MongoDB stores something like:
+
+```text
+email
+  ↓
+Randomized encryption
+  ↓
+Encrypted ciphertext
+  +
+Queryable encryption metadata
+```
+
+The actual storage is more complex than just:
+
+```text
+email: encrypted-value
+```
+
+QE creates additional internal structures that allow MongoDB to determine which encrypted records match a query.
+
+---
+
+# 4. What happens when you SEARCH
+
+You run:
+
+```javascript
+db.users.find({
+  email: "keerthana@gmail.com"
+});
+```
+
+Your application sends the query through the MongoDB driver.
+
+The driver does something conceptually like:
+
+```text
+"keerthana@gmail.com"
+        │
+        ▼
+Encrypt query
+        │
+        ▼
+Generate query tokens
+        │
+        ▼
+Send encrypted query
+        │
+        ▼
+MongoDB
+        │
+        ▼
+Search encrypted queryable structure
+        │
+        ▼
+Find matching encrypted document
+        │
+        ▼
+Return encrypted document
+        │
+        ▼
+Driver decrypts
+        │
+        ▼
+Application sees:
+email = "keerthana@gmail.com"
+```
+
+The MongoDB server never needs to see:
+
+```text
+"keerthana@gmail.com"
+```
+
+in plaintext.
+
+---
+
+# 5. What are Query Tokens?
+
+This is the important part.
+
+QE uses cryptographic structures often described as **query tokens**.
+
+Conceptually:
+
+```text
+Plaintext
+"keerthana@gmail.com"
+       │
+       ▼
+Cryptographic processing
+       │
+       ├── Query token
+       ├── Encrypted value
+       └── Metadata
+```
+
+When you search:
+
+```text
+email = "keerthana@gmail.com"
+```
+
+the driver generates the appropriate query information.
+
+MongoDB uses that information to find the matching encrypted data.
+
+So even though the actual encrypted value is randomized, QE has a separate mechanism that makes the query possible.
+
+---
+
+# 6. Why random encryption is useful
+
+Suppose you had deterministic encryption:
+
+```text
+"keerthana@gmail.com"
+        ↓
+ABC123
+```
+
+Every time the same email appears:
+
+```text
+"keerthana@gmail.com" → ABC123
+```
+
+An attacker who can see the database can notice:
+
+```text
+ABC123
+ABC123
+ABC123
+```
+
+and know that those records have the same plaintext value.
+
+This leaks **equality patterns**.
+
+With randomized encryption:
+
+```text
+"keerthana@gmail.com" → X1A9...
+"keerthana@gmail.com" → P8K2...
+"keerthana@gmail.com" → Z7Q4...
+```
+
+The ciphertexts are different.
+
+This gives stronger protection against pattern analysis.
+
+QE then uses its additional cryptographic query structures to still support queries.
+
+---
+
+# 7. Simple picture
+
+Think of QE as having **two things**:
+
+```text
+              Queryable Encryption
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+          ▼                       ▼
+   Randomized Encryption     Query Structures
+          │                       │
+          ▼                       ▼
+   Protect actual data       Enable queries
+```
+
+So:
+
+> **Randomized encryption protects the data from revealing repeated values.**
+
+> **Queryable structures allow MongoDB to search without decrypting the data.**
+
+---
+
+# 8. Your QE example
+
+You configured:
+
+```javascript
+{
+  path: "email",
+  bsonType: "string",
+  queries: [
+    {
+      queryType: "equality"
+    }
+  ]
+}
+```
+
+This means:
+
+```text
+email
+  │
+  ▼
+Randomized encrypted value
+  +
+Queryable encryption metadata
+  │
+  ▼
+Equality query supported
+```
+
+Then:
+
+```javascript
+db.users.find({
+  email: "keerthana@gmail.com"
+});
+```
+
+The driver automatically handles the encryption/query preparation.
+
+You don't manually do:
+
+```javascript
+encrypt("keerthana@gmail.com")
+```
+
+and you don't manually search ciphertext.
+
+---
+
+### The simplest way to remember it
+
+```text
+Normal encryption
+    ↓
+Encrypt data
+    ↓
+Cannot easily query
+
+
+Deterministic encryption
+    ↓
+Same plaintext → Same ciphertext
+    ↓
+Equality queries possible
+    ↓
+But leaks equality patterns
+
+
+Queryable Encryption
+    ↓
+Randomized encryption
+    +
+Special queryable cryptographic structures
+    ↓
+Query encrypted data
+    ↓
+Better privacy
+```
+
+So **QE is not "random encryption alone."** It is **randomized encryption + special cryptographic mechanisms that let the driver and MongoDB perform supported queries without exposing the plaintext data to the server**.
