@@ -377,6 +377,20 @@ chmod +x docker-compose-up.sh
 - Atlas *does not store your plaintext master key*.
 - Your application uses *the master key to unwrap the DEK*, and the *DEK encrypts/decrypts your actual field data*. MongoDB describes this as envelope encryption.
 
+Simple:
+-------
+* **DEK (Data Encryption Key)** = the key that **actually encrypts your data**.
+* **Master Key** = the key that **protects the DEK**.
+
+**"Master key unwraps the DEK"** means:
+
+> The master key **decrypts/unlocks the encrypted DEK**, so the DEK can then be used to encrypt or decrypt the actual data.
+
+Think of it like:
+**Master Key 🔑 → unlocks DEK 🔐 → DEK encrypts/decrypts Data 📄**
+
+The master key **does not directly encrypt your database data**. It protects the **DEK**.
+
 # Auto Encryption Flow:
                    YOUR NODE.JS APPLICATION
                             |
@@ -1271,6 +1285,76 @@ Then CSFLE uses that DEK to encrypt/decrypt your field.
 So, **we don't create the Key Vault because of the Master Key**. The Key Vault is the MongoDB collection that **stores the encrypted DEKs**, while the Master Key is used to protect those DEKs.
 
 And yes, in your **local CSFLE POC**, `crypto.randomBytes(96)` is the way you generated the 96-byte master key. **You should generate it only once**, not every run.
+
+* Question:
+------------
+------------
+So, **we don't create the Key Vault because of the Master Key**. The Key Vault is the MongoDB collection that **stores the encrypted DEKs**, while the Master Key is used to protect those DEKs. yes in seen in mongo db but it will create only once right for one collection? kmk dek keyvault?
+
+Yes, but there is one important correction: **the Key Vault is not one per collection**.
+
+For MongoDB Client-Side Field Level Encryption (CSFLE), think of it like this:
+
+```text
+KMS / Master Key
+       │
+       │ protects
+       ▼
+     DEK
+       │
+       │ stored encrypted in
+       ▼
+   Key Vault Collection
+       │
+       │ used to encrypt/decrypt
+       ▼
+   Your Data Collection
+```
+
+### How many do you create?
+
+| Component                     | How many?                                      | Purpose                                |
+| ----------------------------- | ---------------------------------------------- | -------------------------------------- |
+| **Master Key (KMK)**          | Usually one or more                            | Protects/wraps the DEKs                |
+| **DEK**                       | Can be multiple                                | Encrypts your actual data fields       |
+| **Key Vault Collection**      | Usually **one per database/application setup** | Stores the encrypted DEK documents     |
+| **Encrypted Data Collection** | Can be many                                    | Stores your encrypted application data |
+
+### Example
+
+Suppose you have:
+
+```text
+users
+orders
+payments
+```
+
+You can have:
+
+```text
+KMS Master Key
+      │
+      ├── DEK 1 → users.email
+      ├── DEK 2 → orders.cardNumber
+      └── DEK 3 → payments.accountNumber
+                │
+                ▼
+        Key Vault Collection
+        (stores all 3 encrypted DEKs)
+```
+
+So, **you don't create a new Key Vault collection for every data collection**.
+
+You typically create the **Key Vault collection once**, then create as many **DEKs** as your encryption design requires.
+
+One more important point: **the Master Key itself is normally not stored inside the MongoDB Key Vault collection**. The Key Vault stores the **encrypted DEK**. The Master Key is managed by a KMS (or, in a local development setup, you may use a local master key).
+
+So your mental model should be:
+
+> **Master Key → protects DEK → encrypted DEK is stored in Key Vault → DEK encrypts your data.**
+
+That is the correct hierarchy.
 
 # important doubt 2 in _keyvault i can see multiple is that created seperately for many node files try?
 --------------------------------------------------------------------------------------------------------
