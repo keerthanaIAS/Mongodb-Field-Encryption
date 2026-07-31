@@ -2665,7 +2665,7 @@ Driver decrypts it
 
 ### About `__safeContent__`
 
-Yes, **`__safeContent__` is part of QE's internal queryable encryption mechanism**, but don't think of it as simply "metadata that decrypts or identifies the random ciphertext." It helps support the encrypted query process and query matching.
+Yes, **`__safeContent__` is part of QE's internal queryable encryption mechanism**, but don't think of it as simply "metadata that decrypts or identifies the random ciphertext." *It helps support the encrypted query process and query matching*.
 
 So the key difference is:
 
@@ -2686,6 +2686,107 @@ Query tokens + queryable encryption structures
 **One sentence to remember:**                                                                               -->*important notes*
 ------------------------------
 > **QE can query randomized encrypted data because it uses a separate cryptographic query mechanism (query tokens and queryable structures); CSFLE randomized encryption doesn't have that mechanism, so the random ciphertext cannot be directly matched.**
+
+-------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
+
+# but u said before 
+*Driver generates query tokens*
+        │
+        ▼
+QE queryable structure *uses tokens*
+now you saying MongoDB uses those tokens with its QE queryable structures why u teaching me with full of confusion!!!!!
+-------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
+
+### So, who does what?
+
+| Component                         | Job                                                              |
+| --------------------------------- | ---------------------------------------------------------------- |
+| **MongoDB Driver + crypt_shared** | Generates the QE query tokens                                    |
+| **MongoDB Server**                | Receives the QE query and tokens                                 |
+| **QE queryable structures**       | Are the encrypted structures MongoDB searches using those tokens |
+| **MongoDB Server**                | Performs the actual search/matching                              |
+| **Driver**                        | Decrypts the returned encrypted data                             |
+
+So these two statements are **both true**, but they describe different steps:
+
+> **Driver generates query tokens.** ✅
+
+> **MongoDB uses those tokens to search the QE queryable structures.** ✅
+
+What I should **not** have said is: **********------------------------*********wrong statement*******-----------------------*********
+
+> "QE queryable structure uses tokens"
+
+because that makes it sound like the structure itself is actively processing the token. The more accurate statement is:
+
+> **The MongoDB server uses the query tokens to search the QE queryable structures.**
+
+### Your exact POC:
+--------------------
+aggregate()
+    │
+    ▼
+Node.js MongoDB Driver
+    │
+    ▼
+crypt_shared
+    │
+    ├── *Reads QE configuration*
+    ├── *Uses encryption keys*
+    └── *Generates query tokens*
+    │
+    ▼
+Encrypted QE query sent to MongoDB
+    │
+    ▼
+MongoDB Server
+    │
+    ▼
+Uses tokens to search QE queryable structures
+    │
+    ▼
+Matching encrypted documents
+    │
+    ▼
+Driver decrypts result
+    │
+    ▼
+Your application
+
+**The key to remember:**
+
+1. You search: "John"
+         ↓
+2. Driver gets "John"
+         ↓
+3. Driver asks crypt_shared: "Make tokens from 'John'"
+         ↓
+4. crypt_shared uses key from Key Vault → CREATES TOKENS
+         ↓
+5. Driver sends these tokens to MongoDB
+         ↓
+6. MongoDB ONLY uses these tokens to SEARCH (does NOT create anything)
+         ↓
+7. MongoDB finds matches and sends encrypted data back to Driver
+         ↓
+8. Driver asks crypt_shared: "Decrypt this"
+         ↓
+9. crypt_shared decrypts using key from Key Vault
+         ↓
+10. You see: "John"
+
+## SIMPLE ROLES:
+* Who	What they do:-
+- crypt_shared	CREATES tokens from your search word
+- MongoDB	USES those tokens to search (like matching fingerprints)
+- Driver	Transports everything back and forth
+
+### Summary:
+- Token Creation = crypt_shared (ALWAYS)
+- Token Usage/Search = MongoDB (ONLY)
+- Decryption = crypt_shared (ALWAYS)
 
 -------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------
@@ -2935,3 +3036,10 @@ WiredTiger
 -------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------
 
+
+-------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
+
+
+-------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
